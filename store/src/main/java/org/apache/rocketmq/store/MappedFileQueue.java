@@ -43,8 +43,8 @@ public class MappedFileQueue {
 
     private final AllocateMappedFileService allocateMappedFileService;
 
-    private long flushedWhere = 0;
-    private long committedWhere = 0;
+    private long flushedWhere = 0;  //已经flush到的位置(是某一个mappedFile中的一个位置)
+    private long committedWhere = 0;//已经commit到的位置(是某一个mappedFile中的一个位置)
 
     private volatile long storeTimestamp = 0;
 
@@ -421,14 +421,18 @@ public class MappedFileQueue {
 
         return deleteCount;
     }
-
+    /**
+     * 从上一次flush位置对应的MappedFile,进行flush
+     * 更新flushedWhere
+     * 返回false代表真正flush了，true代表没有变
+     */
     public boolean flush(final int flushLeastPages) {
         boolean result = true;
         MappedFile mappedFile = this.findMappedFileByOffset(this.flushedWhere, this.flushedWhere == 0);
         if (mappedFile != null) {
             long tmpTimeStamp = mappedFile.getStoreTimestamp();
-            int offset = mappedFile.flush(flushLeastPages);
-            long where = mappedFile.getFileFromOffset() + offset;
+            int offset = mappedFile.flush(flushLeastPages); //刷盘, 设置完成flush的offset
+            long where = mappedFile.getFileFromOffset() + offset; //计算全局的flushOffset
             result = where == this.flushedWhere;
             this.flushedWhere = where;
             if (0 == flushLeastPages) {

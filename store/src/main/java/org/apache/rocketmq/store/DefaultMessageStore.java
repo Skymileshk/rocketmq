@@ -1636,17 +1636,27 @@ public class DefaultMessageStore implements MessageStore {
 
     class FlushConsumeQueueService extends ServiceThread {
         private static final int RETRY_TIMES_OVER = 3;
+        /**
+         * 最后flush时间戳
+         */
         private long lastFlushTimestamp = 0;
 
+        /**
+         * 周期执行一次
+         * @param retryTimes 默认1次, shutdown时3次
+         */
         private void doFlush(int retryTimes) {
             int flushConsumeQueueLeastPages = DefaultMessageStore.this.getMessageStoreConfig().getFlushConsumeQueueLeastPages();
-
+            // retryTimes == RETRY_TIMES_OVER时，进行强制flush。主要用于shutdown时
             if (retryTimes == RETRY_TIMES_OVER) {
                 flushConsumeQueueLeastPages = 0;
             }
 
             long logicsMsgTimestamp = 0;
-
+            // 当时间满足flushConsumeQueueThoroughInterval时，即使写入的数量不足flushConsumeQueueLeastPages，也进行flush
+            // 1654~1660表示,每 flushConsumeQueueThoroughInterval 周期，执行一次 flush 。
+            // 因为不是每次循环到都能满足 flushConsumeQueueLeastPages 大小，因此，需要一定周期进行一次强制 flush 。
+            // 当然，不能每次循环都去执行强制 flush，这样性能较差。需要满足达到一定的页面个数。当距离上次flush的间隔 >= 60S时，即使写入的数量不足flushConsumeQueueLeastPages，也进行flush
             int flushConsumeQueueThoroughInterval = DefaultMessageStore.this.getMessageStoreConfig().getFlushConsumeQueueThoroughInterval();
             long currentTimeMillis = System.currentTimeMillis();
             if (currentTimeMillis >= (this.lastFlushTimestamp + flushConsumeQueueThoroughInterval)) {
@@ -1654,10 +1664,9 @@ public class DefaultMessageStore implements MessageStore {
                 flushConsumeQueueLeastPages = 0;
                 logicsMsgTimestamp = DefaultMessageStore.this.getStoreCheckpoint().getLogicsMsgTimestamp();
             }
-
+            // flush消费队列，默认情况下仅进行一次flush
             ConcurrentMap<String, ConcurrentMap<Integer, ConsumeQueue>> tables = DefaultMessageStore.this.consumeQueueTable;
-
-            for (ConcurrentMap<Integer, ConsumeQueue> maps : tables.values()) {
+            for (ConcurrentMap<Integer/* queueId */, ConsumeQueue/* ConsumeQueue */> maps : tables.values()) {
                 for (ConsumeQueue cq : maps.values()) {
                     boolean result = false;
                     for (int i = 0; i < retryTimes && !result; i++) {
@@ -1665,7 +1674,7 @@ public class DefaultMessageStore implements MessageStore {
                     }
                 }
             }
-
+            // flush 存储 check point
             if (0 == flushConsumeQueueLeastPages) {
                 if (logicsMsgTimestamp > 0) {
                     DefaultMessageStore.this.getStoreCheckpoint().setLogicsMsgTimestamp(logicsMsgTimestamp);
@@ -1680,6 +1689,7 @@ public class DefaultMessageStore implements MessageStore {
             while (!this.isStopped()) {
                 try {
                     int interval = DefaultMessageStore.this.getMessageStoreConfig().getFlushIntervalConsumeQueue();
+                    //1S,每隔1S执行一次Flush
                     this.waitForRunning(interval);
                     this.doFlush(1);
                 } catch (Exception e) {

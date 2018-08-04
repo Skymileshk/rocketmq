@@ -27,7 +27,7 @@ import org.apache.rocketmq.store.config.StorePathConfigHelper;
 public class ConsumeQueue {
     private static final InternalLogger log = InternalLoggerFactory.getLogger(LoggerName.STORE_LOGGER_NAME);
 
-    public static final int CQ_STORE_UNIT_SIZE = 20;
+    public static final int CQ_STORE_UNIT_SIZE = 20;    //每个存储单元大小
     private static final InternalLogger LOG_ERROR = InternalLoggerFactory.getLogger(LoggerName.STORE_ERROR_LOGGER_NAME);
 
     private final DefaultMessageStore defaultMessageStore;
@@ -37,10 +37,10 @@ public class ConsumeQueue {
     private final int queueId;
     private final ByteBuffer byteBufferIndex;
 
-    private final String storePath;
-    private final int mappedFileSize;
-    private long maxPhysicOffset = -1;
-    private volatile long minLogicOffset = 0;
+    private final String storePath; //存储路径，默认{user.home}/store/consumequeue/{topic}/{queueId}
+    private final int mappedFileSize;   //文件大小，默认30w * 20字节 = 600w字节
+    private long maxPhysicOffset = -1;  //对应commitLog的最大物理偏移
+    private volatile long minLogicOffset = 0;   //最小的逻辑偏移
     private ConsumeQueueExt consumeQueueExt = null;
 
     public ConsumeQueue(

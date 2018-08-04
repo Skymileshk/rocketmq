@@ -272,8 +272,8 @@ public class MappedFile extends ReferenceResource {
      */
     public int flush(final int flushLeastPages) {
         if (this.isAbleToFlush(flushLeastPages)) {
-            if (this.hold()) {
-                int value = getReadPosition();
+            if (this.hold()) { //引用+1
+                int value = getReadPosition(); // write的位置
 
                 try {
                     //We only append data to fileChannel or mappedByteBuffer, never both.
@@ -337,6 +337,15 @@ public class MappedFile extends ReferenceResource {
         }
     }
 
+    /**
+     * 是否能够flush。满足如下条件任意条件：
+     * 1. 映射文件已经写满
+     * 2. flushLeastPages > 0 && 未flush部分超过flushLeastPages
+     * 3. flushLeastPages = 0 && 有新写入部分
+     *
+     * @param flushLeastPages flush最小分页
+     * @return 是否能够写入
+     */
     private boolean isAbleToFlush(final int flushLeastPages) {
         int flush = this.flushedPosition.get();
         int write = getReadPosition();
