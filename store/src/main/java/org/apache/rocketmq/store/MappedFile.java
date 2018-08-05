@@ -52,7 +52,7 @@ public class MappedFile extends ReferenceResource {
     //ADD BY ChenYang
     protected final AtomicInteger committedPosition = new AtomicInteger(0);
     private final AtomicInteger flushedPosition = new AtomicInteger(0);
-    protected int fileSize;
+    protected int fileSize; //mappedFile文件大小，consumerQueue和commitlog对应的MappedFile大小不一样
     protected FileChannel fileChannel;
     /**
      * Message will put to here first, and then reput to FileChannel if writeBuffer is not null.
@@ -60,6 +60,7 @@ public class MappedFile extends ReferenceResource {
     protected ByteBuffer writeBuffer = null;
     protected TransientStorePool transientStorePool = null;
     private String fileName;
+    // fileFromOffset就是文件名称，一般为20位数字,代表这个文件开始时的offset
     private long fileFromOffset;
     private File file;
     private MappedByteBuffer mappedByteBuffer;

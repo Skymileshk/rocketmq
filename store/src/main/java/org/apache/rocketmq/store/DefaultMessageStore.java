@@ -238,10 +238,10 @@ public class DefaultMessageStore implements MessageStore {
         }
         this.reputMessageService.start();
 
-        this.haService.start();
+        this.haService.start();                 // todo 启动高可用服务
 
         this.createTempFile();
-        this.addScheduleTask();
+        this.addScheduleTask();                 // 启动清理失效的CommitLog,ConsumeQueue,IndexFile的线程
         this.shutdown = false;
     }
 
@@ -1184,7 +1184,7 @@ public class DefaultMessageStore implements MessageStore {
     }
 
     private void addScheduleTask() {
-
+        //启动CommitLog,ConsumeQueue过期文件删除工作
         this.scheduledExecutorService.scheduleAtFixedRate(new Runnable() {
             @Override
             public void run() {
@@ -1227,12 +1227,15 @@ public class DefaultMessageStore implements MessageStore {
         // }
         // }, 1, 1, TimeUnit.HOURS);
     }
-
+    //每1分钟 1）尝试删除过期的或者因磁盘内存不够而删除CommitLog， 2）删除Broker端的消费队列 ConsumeQueue
     private void cleanFilesPeriodically() {
         this.cleanCommitLogService.run();
         this.cleanConsumeQueueService.run();
     }
 
+    /**
+     * 检查CommitLog中的MappedFileQueue, 检查每一个ConsumeQueue总的MappedFileQueue
+     */
     private void checkSelf() {
         this.commitLog.checkSelf();
 
