@@ -73,6 +73,7 @@ public class NettyRemotingServer extends NettyRemotingAbstract implements Remoti
     private final ChannelEventListener channelEventListener;
 
     private final Timer timer = new Timer("ServerHouseKeepingService", true);
+    // 业务操作一套单独的线程池
     private DefaultEventExecutorGroup defaultEventExecutorGroup;
 
     private RPCHook rpcHook;
@@ -177,7 +178,7 @@ public class NettyRemotingServer extends NettyRemotingAbstract implements Remoti
                     return new Thread(r, "NettyServerCodecThread_" + this.threadIndex.incrementAndGet());
                 }
             });
-
+        // netty
         ServerBootstrap childHandler =
             this.serverBootstrap.group(this.eventLoopGroupBoss, this.eventLoopGroupSelector)
                 .channel(useEpoll() ? EpollServerSocketChannel.class : NioServerSocketChannel.class)
@@ -194,12 +195,12 @@ public class NettyRemotingServer extends NettyRemotingAbstract implements Remoti
                         ch.pipeline()
                             .addLast(defaultEventExecutorGroup, HANDSHAKE_HANDLER_NAME,
                                 new HandshakeHandler(TlsSystemConfig.tlsMode))
-                            .addLast(defaultEventExecutorGroup,
-                                new NettyEncoder(),
-                                new NettyDecoder(),
-                                new IdleStateHandler(0, 0, nettyServerConfig.getServerChannelMaxIdleTimeSeconds()),
-                                new NettyConnectManageHandler(),
-                                new NettyServerHandler()
+                            .addLast(defaultEventExecutorGroup, //专门的线程池处理ChannelHandler逻辑
+                                new NettyEncoder(),             //编码器
+                                new NettyDecoder(),             //解码器
+                                new IdleStateHandler(0, 0, nettyServerConfig.getServerChannelMaxIdleTimeSeconds()),//空闲检测,心跳？
+                                new NettyConnectManageHandler(),//连接管理,处理connect, disconnect, close等事件
+                                new NettyServerHandler()        //业务逻辑处理，接收请求然后处理请求
                             );
                     }
                 });
@@ -217,9 +218,9 @@ public class NettyRemotingServer extends NettyRemotingAbstract implements Remoti
         }
 
         if (this.channelEventListener != null) {
-            this.nettyEventExecutor.start();
+            this.nettyEventExecutor.start();    //Netty事件线程,负责监听Channel事件,连接,断开,异常，空闲时做相应处理
         }
-
+        //定时扫描responseTable,获取返回结果,并且处理超时
         this.timer.scheduleAtFixedRate(new TimerTask() {
 
             @Override

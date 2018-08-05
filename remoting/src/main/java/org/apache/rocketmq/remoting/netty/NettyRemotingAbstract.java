@@ -69,6 +69,8 @@ public abstract class NettyRemotingAbstract {
 
     /**
      * This map caches all on-going requests.
+     * scanResponseTable中遍历扫描该hash中的ResponseFuture
+     * 发送请求之前构造好，放入map，等待对端返回结果
      */
     protected final ConcurrentMap<Integer /* opaque */, ResponseFuture> responseTable =
         new ConcurrentHashMap<Integer, ResponseFuture>(256);
@@ -76,6 +78,7 @@ public abstract class NettyRemotingAbstract {
     /**
      * This container holds all processors per request code, aka, for each incoming request, we may look up the
      * responding processor in this map to handle the request.
+     * BrokerController.registerProcessor 中注册各种RPC处理器
      */
     protected final HashMap<Integer/* request code */, Pair<NettyRequestProcessor, ExecutorService>> processorTable =
         new HashMap<Integer, Pair<NettyRequestProcessor, ExecutorService>>(64);
@@ -517,6 +520,9 @@ public abstract class NettyRemotingAbstract {
         }
     }
 
+    /**
+     * Netty事件线程,负责监听Channel事件,连接,断开,异常，空闲时做相应处理
+     */
     class NettyEventExecutor extends ServiceThread {
         private final LinkedBlockingQueue<NettyEvent> eventQueue = new LinkedBlockingQueue<NettyEvent>();
         private final int maxSize = 10000;

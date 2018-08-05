@@ -115,6 +115,9 @@ public class BrokerController {
     private final ProducerManager producerManager;
     private final ClientHousekeepingService clientHousekeepingService;
     private final PullMessageProcessor pullMessageProcessor;
+    //  拉取消息请求挂起维护线程服务
+    //1.当拉取消息请求获得不了消息时，则会将请求进行挂起，添加到该服务。
+    //2.当有符合条件信息时 或 挂起超时时，重新执行获取消息逻辑。
     private final PullRequestHoldService pullRequestHoldService;
     private final MessageArrivingListener messageArrivingListener;
     private final Broker2Client broker2Client;
@@ -137,7 +140,7 @@ public class BrokerController {
     private final List<ConsumeMessageHook> consumeMessageHookList = new ArrayList<ConsumeMessageHook>();
     private MessageStore messageStore;
     private RemotingServer remotingServer;
-    private RemotingServer fastRemotingServer;
+    private RemotingServer fastRemotingServer;  //fastRemotingServer是master和slaver通信的，默认 10909
     private TopicConfigManager topicConfigManager;
     private ExecutorService sendMessageExecutor;
     private ExecutorService pullMessageExecutor;
@@ -754,47 +757,49 @@ public class BrokerController {
     public String getBrokerAddr() {
         return this.brokerConfig.getBrokerIP1() + ":" + this.nettyServerConfig.getListenPort();
     }
-
+    // createBrokerController 函数接口中的controller.initialize()完成 store目录下的各个consumequeue commitlog等文件的加载和配置的加载
+    // BrokerController.start才是真正的各种服务启动
     public void start() throws Exception {
         if (this.messageStore != null) {
-            this.messageStore.start();
+            this.messageStore.start();      // 存储线程启动
         }
 
         if (this.remotingServer != null) {
-            this.remotingServer.start();
+            this.remotingServer.start();    // NettyRemotingServer线程启动
         }
 
         if (this.fastRemotingServer != null) {
-            this.fastRemotingServer.start();
+            this.fastRemotingServer.start();// master和slaver通信
         }
 
         if (this.fileWatchService != null) {
-            this.fileWatchService.start();
+            this.fileWatchService.start();  // ?
         }
 
         if (this.brokerOuterAPI != null) {
-            this.brokerOuterAPI.start();
+            this.brokerOuterAPI.start();    // broker和别的模块通信的类，封装了NettyRemotingClient
         }
 
         if (this.pullRequestHoldService != null) {
-            this.pullRequestHoldService.start();
+            this.pullRequestHoldService.start(); // 拉取消息请求挂起维护线程服务
         }
 
         if (this.clientHousekeepingService != null) {
-            this.clientHousekeepingService.start();
+            this.clientHousekeepingService.start(); // 清楚不活跃的clients
         }
 
         if (this.filterServerManager != null) {
             this.filterServerManager.start();
         }
 
-        this.registerBrokerAll(true, false, true);
+        this.registerBrokerAll(true, false, true);  // 启动时候向Namesrc注册Broker信息
 
         this.scheduledExecutorService.scheduleAtFixedRate(new Runnable() {
 
             @Override
             public void run() {
                 try {
+                    // 每隔30S执行一次再上报一次
                     BrokerController.this.registerBrokerAll(true, false, brokerConfig.isForceRegister());
                 } catch (Throwable e) {
                     log.error("registerBrokerAll Exception", e);
@@ -803,14 +808,14 @@ public class BrokerController {
         }, 1000 * 10, Math.max(10000, Math.min(brokerConfig.getRegisterNameServerPeriod(), 60000)), TimeUnit.MILLISECONDS);
 
         if (this.brokerStatsManager != null) {
-            this.brokerStatsManager.start();
+            this.brokerStatsManager.start();    // 统计broker的使用状况
         }
 
         if (this.brokerFastFailure != null) {
             this.brokerFastFailure.start();
         }
 
-        if (BrokerRole.SLAVE != messageStoreConfig.getBrokerRole()) {
+        if (BrokerRole.SLAVE != messageStoreConfig.getBrokerRole()) {   // V4.3事物检查线程
             if (this.transactionalMessageCheckService != null) {
                 log.info("Start transaction service!");
                 this.transactionalMessageCheckService.start();
@@ -836,19 +841,29 @@ public class BrokerController {
         doRegisterBrokerAll(true, false, topicConfigSerializeWrapper);
     }
 
+    /**
+     * 向Namesrv注册Broker信息,每隔30S执行一次
+     * @param checkOrderConfig
+     * @param oneway
+     * @param forceRegister
+     */
     public synchronized void registerBrokerAll(final boolean checkOrderConfig, boolean oneway, boolean forceRegister) {
         TopicConfigSerializeWrapper topicConfigWrapper = this.getTopicConfigManager().buildTopicConfigSerializeWrapper();
-
+        /**
+         * broker本身不可读或者不可写，则用 broker 本身的权限配置覆盖topic的读写权限。
+         * 或者简单说 ，broker的读写权限比topic的读写权限具有更高的优先级。
+         *
+         */
         if (!PermName.isWriteable(this.getBrokerConfig().getBrokerPermission())
             || !PermName.isReadable(this.getBrokerConfig().getBrokerPermission())) {
             ConcurrentHashMap<String, TopicConfig> topicConfigTable = new ConcurrentHashMap<String, TopicConfig>();
             for (TopicConfig topicConfig : topicConfigWrapper.getTopicConfigTable().values()) {
                 TopicConfig tmp =
                     new TopicConfig(topicConfig.getTopicName(), topicConfig.getReadQueueNums(), topicConfig.getWriteQueueNums(),
-                        this.brokerConfig.getBrokerPermission());
+                        this.brokerConfig.getBrokerPermission());       //把所有的broker下面的topic信息的读写权限修改为和broker一致
                 topicConfigTable.put(topicConfig.getTopicName(), tmp);
             }
-            topicConfigWrapper.setTopicConfigTable(topicConfigTable);
+            topicConfigWrapper.setTopicConfigTable(topicConfigTable);   //把修改权限后的topic信息topicConfigTable重新赋值给topicConfigWrapper
         }
 
         if (forceRegister || needRegister(this.brokerConfig.getBrokerClusterName(),
@@ -862,6 +877,8 @@ public class BrokerController {
 
     private void doRegisterBrokerAll(boolean checkOrderConfig, boolean oneway,
         TopicConfigSerializeWrapper topicConfigWrapper) {
+        // 把broker维护的topic配置推送给namserver, 同时把broker注册到Nameserver 或者BrokerController.start 每隔30s定时时间到，都会发送该报文，
+        // 除了broker与nameserver的保活报文，也是为了周期把topic配置推送给namserver.
         List<RegisterBrokerResult> registerBrokerResultList = this.brokerOuterAPI.registerBrokerAll(
             this.brokerConfig.getBrokerClusterName(),
             this.getBrokerAddr(),
@@ -877,6 +894,7 @@ public class BrokerController {
         if (registerBrokerResultList.size() > 0) {
             RegisterBrokerResult registerBrokerResult = registerBrokerResultList.get(0);
             if (registerBrokerResult != null) {
+                //如果Slave在配置时没有指定Master的IP,Slave在注册Broker时,Namesrc会将Master的BrokerAddr返回来,更新HAClient上的 masterAddress
                 if (this.updateMasterHAServerAddrPeriodically && registerBrokerResult.getHaServerAddr() != null) {
                     this.messageStore.updateHaMasterAddress(registerBrokerResult.getHaServerAddr());
                 }
