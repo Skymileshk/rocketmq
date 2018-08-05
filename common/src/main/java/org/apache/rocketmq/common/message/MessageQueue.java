@@ -22,6 +22,11 @@ public class MessageQueue implements Comparable<MessageQueue>, Serializable {
     private static final long serialVersionUID = 6191200464116433425L;
     private String topic;
     private String brokerName;
+    /**
+     * 队列id
+     * 读队列的话，范围[0,QueueData.readQueueNums]
+     * 写队列的话，范围[0,QueueData.writeQueueNums]
+     */
     private int queueId;
 
     public MessageQueue() {

@@ -409,11 +409,11 @@ public class MappedFile extends ReferenceResource {
 
         return null;
     }
-
+    //返回从pos到最大commit位置的所有数据
     public SelectMappedBufferResult selectMappedBuffer(int pos) {
         int readPosition = getReadPosition();
         if (pos < readPosition && pos >= 0) {
-            if (this.hold()) {
+            if (this.hold()) {//引用+1
                 ByteBuffer byteBuffer = this.mappedByteBuffer.slice();
                 byteBuffer.position(pos);
                 int size = readPosition - pos;

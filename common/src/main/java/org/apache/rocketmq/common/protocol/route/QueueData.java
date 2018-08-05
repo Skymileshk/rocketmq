@@ -19,13 +19,13 @@
  * $Id: QueueData.java 1835 2013-05-16 02:00:50Z vintagewang@apache.org $
  */
 package org.apache.rocketmq.common.protocol.route;
-
+//https://www.jianshu.com/p/0baf192e3e60
 public class QueueData implements Comparable<QueueData> {
     private String brokerName;
-    private int readQueueNums;
-    private int writeQueueNums;
-    private int perm;
-    private int topicSynFlag;
+    private int readQueueNums;  // 配置的读队列数量
+    private int writeQueueNums; // 配置的写队列数量
+    private int perm;           // 配置的权限，参考PermName类,Topic的读写权限(2是写 4是读 6是读写)
+    private int topicSynFlag;   // 配置的,同步复制还是异步复制标记,对应TopicConfig.topicSysFlag
 
     public int getReadQueueNums() {
         return readQueueNums;

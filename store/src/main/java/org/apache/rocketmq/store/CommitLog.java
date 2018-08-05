@@ -41,6 +41,26 @@ import org.apache.rocketmq.store.schedule.ScheduleMessageService;
 
 /**
  * Store all metadata downtime for recovery, data protection reliability
+ * commitlog 里面记录了每条消息的消费情况，是否被消费，由谁消费，该消息是否持久化等信息，例如可以通过qadmin queryMsgById查看消费情况
+ * ConsumeQueue 是commitlog的索引，也是以Mapfile为存储。
+ *
+ * consume queue是消息的逻辑队列，相当于字典的目录，用来指定消息在物理文件commit log上的位置。
+ *
+ * 所有消息都存在一个单一的CommitLog文件里面，然后有后台线程异步的同步到 ConsumeQueue，再由Consumer进行消费。
+ * 而RocketMQ却为Producer和Consumer分别设计了不同的存储结构，Producer对应CommitLog, Consumer对应ConsumeQueue。
+ * 这里至所以可以用“异步线程”，也是因为消息队列天生就是用来“缓冲消息”的。只要消息到了CommitLog，发送的消息也就不会丢。
+ * 只要消息不丢，那就有了“充足的回旋余地”，用一个后台线程慢慢同步到ConsumeQueue，再由Consumer消费。可以说，这也是在消息
+ * 队列内部的一个典型的“最终一致性”的案例：Producer发了消息，进了CommitLog，此时Consumer并不可见。但没关系，只要消息不丢，
+ * 消息最终肯定会进入 ConsumeQueue，让Consumer可见。
+ * 参考http://blog.csdn.net/chunlongyu/article/details/54576649
+ * commitlog文件中每条消息存储格式可以参考:http://blog.csdn.net/xxxxxx91116/article/details/50333161
+ *
+ * commitlog中存储的消息格式已经指定好该消息对应的topic，已经存到consumeQueue中对应的topic的那个队列，究竟写入那个consumequeue的那个queueid，这是由客户端投递消息的时候
+ * 组包commitlog格式消息的时候指定的，客户端做的负载均衡，选择不同queueid投递
+ *
+ *  异步线程分发 commitlog 文件中的消息到 consumeQueue 或者分发到 indexService 见 ReputMessageService
+ *  为什么有了commitlog还要加个consumeQueue呢？ 因为commitlog只是不停的往里面写入消息，如果没有consumeQueue，你要是想获取某个队列上某个queueid下的第n条消息的话
+ *  你就必须遍历整个commitlog,效率低下 ，见 分发类DispatchRequest
  */
 public class CommitLog {
     // Message's MAGIC CODE daa320a7
@@ -48,19 +68,24 @@ public class CommitLog {
     private static final InternalLogger log = InternalLoggerFactory.getLogger(LoggerName.STORE_LOGGER_NAME);
     // End of file empty MAGIC CODE cbd43194
     private final static int BLANK_MAGIC_CODE = -875286124;
+    // 无论CommitLog，还是ConsumeQueue，都有一个对应的MappedFileQueue，也就是对应的内存映射文件的链表
     private final MappedFileQueue mappedFileQueue;
     private final DefaultMessageStore defaultMessageStore;
+    // 有同步和异步刷盘两种。 默认异步
     private final FlushCommitLogService flushCommitLogService;
 
     //If TransientStorePool enabled, we must flush message to FileChannel at fixed periods
     private final FlushCommitLogService commitLogService;
-
+    // 消息追加到commitlog以后的回调处理
     private final AppendMessageCallback appendMessageCallback;
     private final ThreadLocal<MessageExtBatchEncoder> batchEncoderThreadLocal;
+    // 标记topic的某一个队列写入到了哪里的逻辑位点。注意这里不是消费位点
     private HashMap<String/* topic-queueid */, Long/* offset */> topicQueueTable = new HashMap<String, Long>(1024);
+    // ???
     private volatile long confirmOffset = -1L;
-
+    // 当前获取lock时间。果当前解锁，则为0
     private volatile long beginTimeInLock = 0;
+    // true: Can lock, false : in lock. 添加消息 螺旋锁(通过while循环实现)
     private final PutMessageLock putMessageLock;
 
     public CommitLog(final DefaultMessageStore defaultMessageStore) {
@@ -138,12 +163,15 @@ public class CommitLog {
 
     /**
      * Read CommitLog data, use data replication
+     * @param offset 物理offset
+     * @return 获取映射Buffer结果
      */
     public SelectMappedBufferResult getData(final long offset) {
         return this.getData(offset, offset == 0);
     }
 
     public SelectMappedBufferResult getData(final long offset, final boolean returnFirstOnNotFound) {
+        // mappedFileSize默认1G
         int mappedFileSize = this.defaultMessageStore.getMessageStoreConfig().getMapedFileSizeCommitLog();
         MappedFile mappedFile = this.mappedFileQueue.findMappedFileByOffset(offset, returnFirstOnNotFound);
         if (mappedFile != null) {
@@ -222,6 +250,9 @@ public class CommitLog {
     /**
      * check the message and returns the message size
      *
+     * commitlog文件中每条消息的存储格式见http://blog.csdn.net/chunlongyu/article/details/54576649
+     * 解析byteBuffer内容，然后根据解析出的内容信息去构建 DispatchRequest 类
+     *
      * @return 0 Come the end of the file // >0 Normal messages // -1 Message checksum failure
      */
     public DispatchRequest checkMessageAndReturnSize(java.nio.ByteBuffer byteBuffer, final boolean checkCRC,
@@ -243,31 +274,31 @@ public class CommitLog {
             }
 
             byte[] bytesContent = new byte[totalSize];
-
+            // 3 BODYCRC
             int bodyCRC = byteBuffer.getInt();
-
+            // 4 QUEUEID    commitlog中存储的消息格式已经指定好该消息对应的topic，已经存到consumeQueue中对应的topic的那个队列
             int queueId = byteBuffer.getInt();
-
+            // 5 FLAG
             int flag = byteBuffer.getInt();
-
+            // 6 QUEUEOFFSET == comsumerOffset ，存的就是commitLog的offset
             long queueOffset = byteBuffer.getLong();
-
+            // 7 PHYSICALOFFSET
             long physicOffset = byteBuffer.getLong();
-
+            // 8 SYSFLAG
             int sysFlag = byteBuffer.getInt();
-
+            // 9 BORNTIMESTAMP
             long bornTimeStamp = byteBuffer.getLong();
-
+            // 10 BORNHOST（IP+PORT）
             ByteBuffer byteBuffer1 = byteBuffer.get(bytesContent, 0, 8);
-
+            // 11 STORETIMESTAMP
             long storeTimestamp = byteBuffer.getLong();
-
+            // 12 STOREHOST（IP+PORT）
             ByteBuffer byteBuffer2 = byteBuffer.get(bytesContent, 0, 8);
-
+            // 13 RECONSUMETIMES
             int reconsumeTimes = byteBuffer.getInt();
-
+            // 14 Prepared Transaction Offset
             long preparedTransactionOffset = byteBuffer.getLong();
-
+            // 15 BODY
             int bodyLen = byteBuffer.getInt();
             if (bodyLen > 0) {
                 if (readBody) {
@@ -284,7 +315,7 @@ public class CommitLog {
                     byteBuffer.position(byteBuffer.position() + bodyLen);
                 }
             }
-
+            // 16 TOPIC
             byte topicLen = byteBuffer.get();
             byteBuffer.get(bytesContent, 0, topicLen);
             String topic = new String(bytesContent, 0, topicLen, MessageDecoder.CHARSET_UTF8);
@@ -292,7 +323,7 @@ public class CommitLog {
             long tagsCode = 0;
             String keys = "";
             String uniqKey = null;
-
+            // 17 properties
             short propertiesLength = byteBuffer.getShort();
             Map<String, String> propertiesMap = null;
             if (propertiesLength > 0) {

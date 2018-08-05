@@ -24,9 +24,17 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import org.apache.rocketmq.remoting.protocol.RemotingSerializable;
-
+//定义了topic路由的相关信息,即一个topic到哪些brokerAddr去找等等
 public class TopicRouteData extends RemotingSerializable {
+    /**
+     * topic排序的配置
+     * 和"ORDER_TOPIC_CONFIG"这个NameSpace有关
+     * 参照DefaultRequestProcessor#getRouteInfoByTopic
+     */
     private String orderTopicConf;
+    /**
+     * 存放Topic对应的Queues信息集合,注意只是队列信息，并没有真正的队列,一个topic可以对应多条QueueData
+     */
     private List<QueueData> queueDatas;
     private List<BrokerData> brokerDatas;
     private HashMap<String/* brokerAddr */, List<String>/* Filter Server */> filterServerTable;

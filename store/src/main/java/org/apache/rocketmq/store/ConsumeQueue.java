@@ -375,6 +375,11 @@ public class ConsumeQueue {
         return this.minLogicOffset / CQ_STORE_UNIT_SIZE;
     }
 
+    /**
+     * 添加位置信息封装: topic 主题, queueId 队列编号, offset commitLog存储位置, size 消息长度,
+     *                tagsCode 消息tagsCode, storeTimestamp 存储时间, logicOffset 队列位置.
+     * @param request
+     */
     public void putMessagePositionInfoWrapper(DispatchRequest request) {
         final int maxRetries = 30;
         boolean canWrite = this.defaultMessageStore.getRunningFlags().isCQWriteable();
@@ -417,22 +422,31 @@ public class ConsumeQueue {
         this.defaultMessageStore.getRunningFlags().makeLogicsQueueError();
     }
 
+    /**
+     *
+     * @param offset commitLog存储位置
+     * @param size  消息长度
+     * @param tagsCode  消息tagsCode
+     * @param cqOffset  逻辑队列位置==commitLog的offset
+     * @return 添加是否成功
+     */
     private boolean putMessagePositionInfo(final long offset, final int size, final long tagsCode,
         final long cqOffset) {
-
+        // 如果已经重放过，直接返回成功
         if (offset <= this.maxPhysicOffset) {
             return true;
         }
-
+        // 写入位置信息到byteBuffer
         this.byteBufferIndex.flip();
         this.byteBufferIndex.limit(CQ_STORE_UNIT_SIZE);
-        this.byteBufferIndex.putLong(offset);
-        this.byteBufferIndex.putInt(size);
-        this.byteBufferIndex.putLong(tagsCode);
-
+        this.byteBufferIndex.putLong(offset);   // 8字节
+        this.byteBufferIndex.putInt(size);      // 4字节
+        this.byteBufferIndex.putLong(tagsCode); // 8字节
+        // 计算consumeQueue存储位置，并获得对应的MappedFile
         final long expectLogicOffset = cqOffset * CQ_STORE_UNIT_SIZE;
 
         MappedFile mappedFile = this.mappedFileQueue.getLastMappedFile(expectLogicOffset);
+        // ？没搞懂这个if ?
         if (mappedFile != null) {
 
             if (mappedFile.isFirstCreateInQueue() && cqOffset != 0 && mappedFile.getWrotePosition() == 0) {
@@ -452,7 +466,7 @@ public class ConsumeQueue {
                         expectLogicOffset, currentLogicOffset, this.topic, this.queueId, expectLogicOffset - currentLogicOffset);
                     return true;
                 }
-
+                //实际该写的位置和理论不一样
                 if (expectLogicOffset != currentLogicOffset) {
                     LOG_ERROR.warn(
                         "[BUG]logic queue order maybe wrong, expectLogicOffset: {} currentLogicOffset: {} Topic: {} QID: {} Diff: {}",
@@ -464,7 +478,7 @@ public class ConsumeQueue {
                     );
                 }
             }
-            this.maxPhysicOffset = offset;
+            this.maxPhysicOffset = offset;  //对应commitLog的最大偏移
             return mappedFile.appendMessage(this.byteBufferIndex.array());
         }
         return false;

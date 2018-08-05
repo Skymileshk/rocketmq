@@ -104,6 +104,12 @@ public class DefaultMessageStore implements MessageStore {
 
     private AtomicLong printTimes = new AtomicLong(0);
 
+    /**
+     * rocketmq4.0中此过程的核心服务是ReputMessageService，与之前版本不同的是在rocketmq4.0版本中，
+     * consumeQueue与indexFile数据存入的服务线程独立出来了，
+     * 分别使用CommitLogDispatcherBuildConsumeQueue和CommitLogDispatcherBuildIndex类处理，
+     * 初始化DefaultMessageStore时，将这两个类存放入dispatcherList列表中
+     */
     private final LinkedList<CommitLogDispatcher> dispatcherList;
 
     private RandomAccessFile lockFile;
@@ -217,18 +223,18 @@ public class DefaultMessageStore implements MessageStore {
         lockFile.getChannel().write(ByteBuffer.wrap("lock".getBytes()));
         lockFile.getChannel().force(true);
 
-        this.flushConsumeQueueService.start();
-        this.commitLog.start();
-        this.storeStatsService.start();
+        this.flushConsumeQueueService.start();  // 启动周期Flush线程
+        this.commitLog.start();                 // todo broker启动的这个刷盘等待分析
+        this.storeStatsService.start();         // 启动TPS及状态新打印线程
 
         if (this.scheduleMessageService != null && SLAVE != messageStoreConfig.getBrokerRole()) {
-            this.scheduleMessageService.start();
+            this.scheduleMessageService.start();// Master启动延时任务投递线程,同时每隔10S持久化每隔延时队列的投递进度
         }
 
         if (this.getMessageStoreConfig().isDuplicationEnable()) {
             this.reputMessageService.setReputFromOffset(this.commitLog.getConfirmOffset());
         } else {
-            this.reputMessageService.setReputFromOffset(this.commitLog.getMaxOffset());
+            this.reputMessageService.setReputFromOffset(this.commitLog.getMaxOffset()); //指定ReputMessageService从CommitLog当前最大进度开始
         }
         this.reputMessageService.start();
 
@@ -1076,6 +1082,15 @@ public class DefaultMessageStore implements MessageStore {
         return null;
     }
 
+    /**
+     * 根据 topic + queueId 获取 ConsumeQueue
+     * 如果不存在，则创建一个目录../consumequeue/topic/queueId，将这个目录封装成一个MappedFileQueue后存入ConsumeQueue中,对外提供无限量空间
+     * 目录内的每个消费信息文件大小为6000000B，也就是5.72MB，目录名称类似CommitLog,第一个就是000000000000，第二个为000000000000+1*fileSize=000006000000
+     *
+     * @param topic
+     * @param queueId
+     * @return ConsumeQueue
+     */
     public ConsumeQueue findConsumeQueue(String topic, int queueId) {
         ConcurrentMap<Integer, ConsumeQueue> map = consumeQueueTable.get(topic);
         if (null == map) {
@@ -1366,6 +1381,10 @@ public class DefaultMessageStore implements MessageStore {
         }
     }
 
+    /**
+     * 建立消息offset位置信息 到 ConsumeQueue中
+     * @param dispatchRequest
+     */
     public void putMessagePositionInfo(DispatchRequest dispatchRequest) {
         ConsumeQueue cq = this.findConsumeQueue(dispatchRequest.getTopic(), dispatchRequest.getQueueId());
         cq.putMessagePositionInfoWrapper(dispatchRequest);
@@ -1713,6 +1732,23 @@ public class DefaultMessageStore implements MessageStore {
         }
     }
 
+    /**
+     * 两个作用ConsumeQueue创建，IndexFile创建.
+     *
+     * ReputMessageService 的服务，这个服务每隔 1 秒会检查一下这个 CommitLog 是否有新的数据写入。
+     * ReputMessageService 自身维护了一个偏移量 reputFromOffset，用以对比和 CommitLog 文件中的消息总偏移量的差距。
+     * 当这两个偏移量不同的时候，就代表有新的消息到来了。
+     *
+     * ConsumeQueue创建过程：
+     * 1. 首先会创建CommitLog，在将数据写入CommitLog之后，调用defaultMessageStore->doReput->doDispatch
+     * 2. doDispatch()调用 putMessagePostionInfo 将数据写入ConsumeQueue
+     *
+     * IndexService用于创建索引文件集合，当用户想要查询某个topic下某个key的消息时，能够快速响应；
+     * 这里注意不要与上述的ConsumeQueue混合，ConsumeQueue只是为了抽象出多个queue，方便并发情况下，用户put/get消息。
+     * IndexFile的创建过程：
+     * 1. 首先在 doDispatch 写入ConsumeQueue后，会再调用indexService.putRequest，创建索引请求
+     * 2. 调用IndexService的buildIndex创建索引
+     */
     class ReputMessageService extends ServiceThread {
 
         private volatile long reputFromOffset = 0;
@@ -1757,21 +1793,25 @@ public class DefaultMessageStore implements MessageStore {
                     && this.reputFromOffset >= DefaultMessageStore.this.getConfirmOffset()) {
                     break;
                 }
-
+                //reputFromOffset是 commitlog 的最大物理位点，现在写入到这个位置了。
+                //通获取从reputFromOffset开始到最后一个MappedFile的commitPotision的数据的引用
                 SelectMappedBufferResult result = DefaultMessageStore.this.commitLog.getData(reputFromOffset);
                 if (result != null) {
                     try {
+                        //更新reputFromOffset值
                         this.reputFromOffset = result.getStartOffset();
-
+                        //每读一轮,消息前4字节表示消息总长度,按消息存储结构读取,如果还有剩余的就继续读
                         for (int readSize = 0; readSize < result.getSize() && doNext; ) {
+                            //生成重放消息重放调度请求,从mappedByteBuffer中读取字节，解析成消息
                             DispatchRequest dispatchRequest =
                                 DefaultMessageStore.this.commitLog.checkMessageAndReturnSize(result.getByteBuffer(), false, false);
                             int size = dispatchRequest.getMsgSize();
 
                             if (dispatchRequest.isSuccess()) {
                                 if (size > 0) {
+                                    // 成功读取Message,更新ConsumeQueue里的位置信息,更新IndexFile
                                     DefaultMessageStore.this.doDispatch(dispatchRequest);
-
+                                    // 通知有新消息
                                     if (BrokerRole.SLAVE != DefaultMessageStore.this.getMessageStoreConfig().getBrokerRole()
                                         && DefaultMessageStore.this.brokerConfig.isLongPollingEnable()) {
                                         DefaultMessageStore.this.messageArrivingListener.arriving(dispatchRequest.getTopic(),
@@ -1782,6 +1822,7 @@ public class DefaultMessageStore implements MessageStore {
 
                                     this.reputFromOffset += size;
                                     readSize += size;
+                                    // 如果当前实例是SLAVE，更新统计数据
                                     if (DefaultMessageStore.this.getMessageStoreConfig().getBrokerRole() == BrokerRole.SLAVE) {
                                         DefaultMessageStore.this.storeStatsService
                                             .getSinglePutMessageTopicTimesTotal(dispatchRequest.getTopic()).incrementAndGet();
@@ -1789,16 +1830,16 @@ public class DefaultMessageStore implements MessageStore {
                                             .getSinglePutMessageTopicSizeTotal(dispatchRequest.getTopic())
                                             .addAndGet(dispatchRequest.getMsgSize());
                                     }
-                                } else if (size == 0) {
+                                } else if (size == 0) { // 无数据，继续处理
                                     this.reputFromOffset = DefaultMessageStore.this.commitLog.rollNextFile(this.reputFromOffset);
                                     readSize = result.getSize();
                                 }
-                            } else if (!dispatchRequest.isSuccess()) {
+                            } else if (!dispatchRequest.isSuccess()) {  // 读取失败
 
-                                if (size > 0) {
+                                if (size > 0) { // 读取到Message却不是Message
                                     log.error("[BUG]read total count not equals msg total size. reputFromOffset={}", reputFromOffset);
                                     this.reputFromOffset += size;
-                                } else {
+                                } else {    // 读取到Blank却不是Blank
                                     doNext = false;
                                     if (DefaultMessageStore.this.brokerConfig.getBrokerId() == MixAll.MASTER_ID) {
                                         log.error("[BUG]the master dispatch message to consume queue error, COMMITLOG OFFSET: {}",
