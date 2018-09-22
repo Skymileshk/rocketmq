@@ -191,6 +191,15 @@ public class MappedFileQueue {
         return 0;
     }
 
+    /**
+     * 返回mappedFiles中最后一个mappedFile，
+     * 如果mappedFiles为空,根据startOffset以及needCreate判断是否需要创建出来最新的mappedFile
+     * 如果mappedFiles最后一个写满了，根据needCreate判断是否需要创建出来最新的mappedFile
+     *
+     * @param startOffset
+     * @param needCreate
+     * @return
+     */
     public MappedFile getLastMappedFile(final long startOffset, boolean needCreate) {
         long createOffset = -1;
         MappedFile mappedFileLast = getLastMappedFile();
@@ -204,11 +213,12 @@ public class MappedFileQueue {
         }
 
         if (createOffset != -1 && needCreate) {
+            // 创建下一个mappedfile和下下个mappedfile的路径。
             String nextFilePath = this.storePath + File.separator + UtilAll.offset2FileName(createOffset);
             String nextNextFilePath = this.storePath + File.separator
                 + UtilAll.offset2FileName(createOffset + this.mappedFileSize);
             MappedFile mappedFile = null;
-
+            // 有异步分配Mapfile的服务
             if (this.allocateMappedFileService != null) {
                 mappedFile = this.allocateMappedFileService.putRequestAndReturnMappedFile(nextFilePath,
                     nextNextFilePath, this.mappedFileSize);

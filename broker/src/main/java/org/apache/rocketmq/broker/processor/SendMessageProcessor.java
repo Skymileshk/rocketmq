@@ -69,6 +69,7 @@ public class SendMessageProcessor extends AbstractSendMessageProcessor implement
             case RequestCode.CONSUMER_SEND_MSG_BACK:
                 return this.consumerSendMsgBack(ctx, request);
             default:
+                // 解析请求
                 SendMessageRequestHeader requestHeader = parseRequestHeader(request);
                 if (requestHeader == null) {
                     return null;
@@ -296,10 +297,10 @@ public class SendMessageProcessor extends AbstractSendMessageProcessor implement
                                         final RemotingCommand request,
                                         final SendMessageContext sendMessageContext,
                                         final SendMessageRequestHeader requestHeader) throws RemotingCommandException {
-
+        // 初始化响应
         final RemotingCommand response = RemotingCommand.createResponseCommand(SendMessageResponseHeader.class);
         final SendMessageResponseHeader responseHeader = (SendMessageResponseHeader)response.readCustomHeader();
-
+        // 初始化响应头
         response.setOpaque(request.getOpaque());
 
         response.addExtField(MessageConst.PROPERTY_MSG_REGION, this.brokerController.getBrokerConfig().getRegionId());
@@ -313,15 +314,16 @@ public class SendMessageProcessor extends AbstractSendMessageProcessor implement
             response.setRemark(String.format("broker unable to service, until %s", UtilAll.timeMillisToHumanString2(startTimstamp)));
             return response;
         }
-
+        // 消息配置(Topic配置）校验
         response.setCode(-1);
         super.msgCheck(ctx, requestHeader, response);
         if (response.getCode() != -1) {
             return response;
         }
 
+        //存储消息
         final byte[] body = request.getBody();
-
+        // 如果队列小于0，从可用队列随机选择
         int queueIdInt = requestHeader.getQueueId();
         TopicConfig topicConfig = this.brokerController.getTopicConfigManager().selectTopicConfig(requestHeader.getTopic());
 
@@ -329,16 +331,18 @@ public class SendMessageProcessor extends AbstractSendMessageProcessor implement
             queueIdInt = Math.abs(this.random.nextInt() % 99999999) % topicConfig.getWriteQueueNums();
         }
 
+        // 创建MessageExtBrokerInner
         MessageExtBrokerInner msgInner = new MessageExtBrokerInner();
         msgInner.setTopic(requestHeader.getTopic());
         msgInner.setQueueId(queueIdInt);
-
+        // 对RETRY类型的消息处理
         if (!handleRetryAndDLQ(requestHeader, response, request, msgInner, topicConfig)) {
             return response;
         }
 
         msgInner.setBody(body);
         msgInner.setFlag(requestHeader.getFlag());
+        // 设置消息属性,从requestHeader获取
         MessageAccessor.setProperties(msgInner, MessageDecoder.string2messageProperties(requestHeader.getProperties()));
         msgInner.setPropertiesString(requestHeader.getProperties());
         msgInner.setBornTimestamp(requestHeader.getBornTimestamp());
@@ -347,6 +351,7 @@ public class SendMessageProcessor extends AbstractSendMessageProcessor implement
         msgInner.setReconsumeTimes(requestHeader.getReconsumeTimes() == null ? 0 : requestHeader.getReconsumeTimes());
         PutMessageResult putMessageResult = null;
         Map<String, String> oriProps = MessageDecoder.string2messageProperties(requestHeader.getProperties());
+        // 校验是否不允许发送事务消息
         String traFlag = oriProps.get(MessageConst.PROPERTY_TRANSACTION_PREPARED);
         if (traFlag != null && Boolean.parseBoolean(traFlag)) {
             if (this.brokerController.getBrokerConfig().isRejectTransactionMessage()) {
@@ -358,6 +363,7 @@ public class SendMessageProcessor extends AbstractSendMessageProcessor implement
             }
             putMessageResult = this.brokerController.getTransactionalMessageService().prepareMessage(msgInner);
         } else {
+            // 消息存储
             putMessageResult = this.brokerController.getMessageStore().putMessage(msgInner);
         }
 

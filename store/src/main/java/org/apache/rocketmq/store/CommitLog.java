@@ -560,7 +560,7 @@ public class CommitLog {
 
         String topic = msg.getTopic();
         int queueId = msg.getQueueId();
-
+        // 延时消息处理,事务的 TRANSACTION_PREPARED_TYPE和TRANSACTION_ROLLBACK_TYPE 消息不支持延时投递
         final int tranType = MessageSysFlag.getTransactionValue(msg.getSysFlag());
         if (tranType == MessageSysFlag.TRANSACTION_NOT_TYPE
             || tranType == MessageSysFlag.TRANSACTION_COMMIT_TYPE) {
@@ -582,7 +582,7 @@ public class CommitLog {
                 msg.setQueueId(queueId);
             }
         }
-
+        // 获取写入映射文件
         long eclipseTimeInLock = 0;
         MappedFile unlockMappedFile = null;
         MappedFile mappedFile = this.mappedFileQueue.getLastMappedFile();
@@ -593,7 +593,7 @@ public class CommitLog {
             this.beginTimeInLock = beginLockTimestamp;
 
             // Here settings are stored timestamp, in order to ensure an orderly
-            // global
+            // global 设置这条消息的存储时间
             msg.setStoreTimestamp(beginLockTimestamp);
 
             if (null == mappedFile || mappedFile.isFull()) {

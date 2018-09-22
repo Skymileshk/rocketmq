@@ -48,8 +48,16 @@ public class AllocateMappedFileService extends ServiceThread {
         this.messageStore = messageStore;
     }
 
+    /**
+     * 等待nextFilePath创建完成,(nextNextFilePath只是放在记录中，并不用同步等它创建完)
+     * 将request放入 requestTable 表中，再将其放入优先级请求队列 requestQueue 中
+     * @param nextFilePath
+     * @param nextNextFilePath
+     * @param fileSize
+     * @return
+     */
     public MappedFile putRequestAndReturnMappedFile(String nextFilePath, String nextNextFilePath, int fileSize) {
-        int canSubmitRequests = 2;
+        int canSubmitRequests = 2; //默认可以提交2个请求
         if (this.messageStore.getMessageStoreConfig().isTransientStorePoolEnable()) {
             if (this.messageStore.getMessageStoreConfig().isFastFailIfNoBufferInStorePool()
                 && BrokerRole.SLAVE != this.messageStore.getMessageStoreConfig().getBrokerRole()) { //if broker is slave, don't fast fail even no buffer in pool
@@ -97,11 +105,13 @@ public class AllocateMappedFileService extends ServiceThread {
         AllocateRequest result = this.requestTable.get(nextFilePath);
         try {
             if (result != null) {
+                //通过countdownlatch阻塞等待5ms mappedfile创建请求结果,等待 MappedFile 的创建完成
                 boolean waitOK = result.getCountDownLatch().await(waitTimeOut, TimeUnit.MILLISECONDS);
                 if (!waitOK) {
                     log.warn("create mmap timeout " + result.getFilePath() + " " + result.getFileSize());
                     return null;
                 } else {
+                    // 从请求表中删除
                     this.requestTable.remove(nextFilePath);
                     return result.getMappedFile();
                 }
